@@ -1,108 +1,142 @@
 # Agentic AI eBook RAG Chatbot
 
-A Python RAG chatbot that answers questions using the Agentic AI eBook, with PDF ingestion, OpenAI embeddings, Pinecone vector search, a LangGraph workflow, and a FastAPI interface. It returns the answer, the source chunks, and an evidence-based confidence score; unrelated or weakly supported questions receive an explicit refusal.
+A Python chatbot that retrieves evidence from the Agentic AI eBook and returns a source-grounded response through FastAPI. It uses **LangGraph**, a persistent **local SQLite TF-IDF vector index**, and extractive answer generation. It runs without OpenAI or Pinecone credentials, network access to model APIs, or hosted vector services.
+
+## Assessment requirement mapping
+
+| Assessment area | Implementation |
+| --- | --- |
+| PDF ingestion and chunking | `PyPDFLoader` plus `RecursiveCharacterTextSplitter` (1,000-character chunks, 200-character overlap) |
+| Embedding/vector retrieval | Local sparse TF-IDF vectors persisted in SQLite; cosine similarity ranks candidate chunks |
+| Graph orchestration | LangGraph retrieval, relevance gate, extractive answer, and grounding check |
+| API response | FastAPI `POST /chat` returns `query`, `final_answer`, `retrieved_context_chunks`, and `confidence_score` |
+| Sample validation | Six assessment-style questions, including an out-of-scope refusal, in `tests_sample_queries.py` |
+
+## Provider and vector-store decision
+
+The supplied assessment example uses OpenAI dense embeddings and Pinecone. During setup, the OpenAI embeddings endpoint returned HTTP 401 (`invalid_api_key`) for the configured credential, and Pinecone setup was also a blocker. Rather than claim an unverified external integration works, this submission keeps its core RAG path runnable without either service: retrieval uses local TF-IDF term vectors and the answer is composed only from exact sentences in the retrieved eBook chunks.
+
+This is a deliberate, transparent alternative—not an OpenAI-generated response and not a Pinecone index. It avoids embedding API costs and credentials while providing reproducible retrieval, source citations, a measurable retrieval score, and a deterministic refusal when evidence is weak. The trade-off is lexical rather than semantic retrieval: paraphrased questions may retrieve less well than dense embeddings. The existing API key is not read, displayed, or required by this local implementation. Do not publish API keys.
 
 ## Requirements
 
 - Python 3.10 or newer
-- OpenAI API key
-- Pinecone API key and a Pinecone index configured for **1536 dimensions** and **cosine** similarity
-- The PDF at `D:\Placement\Ebook-Agentic-AI.pdf`, or another local PDF path
+- The supplied PDF, by default `D:\Placement\Ebook-Agentic-AI.pdf`
+- No API keys, account setup, or hosted vector database
 
-The PDF and API credentials are not committed to this repository.
+## Install (Windows PowerShell)
 
-## Setup (Windows PowerShell)
+Open PowerShell in the repository directory:
 
 ```powershell
+cd "C:\Appening AI Chatbot\Appening-AI-Chatbot"
 py -3.10 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 pip install -r requirements.txt
-Copy-Item .env.example .env
 ```
 
-Edit `.env` and provide your OpenAI and Pinecone credentials and the index name. Do not commit `.env`.
+Optional local settings are in `.env.example`. Copy the template if you want to change the database path, collection, result count, or relevance threshold:
 
-Create a Pinecone serverless index in the Pinecone console using dimension `1536`, metric `cosine`, and the cloud/region of your choice. Set the same name in `PINECONE_INDEX_NAME`. The application verifies that the index exists and has the correct dimension; create it in Pinecone before ingestion.
+```powershell
+Copy-Item .env.example .env
+notepad .env
+```
+
+No secret values belong in `.env` for the current local-only implementation.
 
 ## Ingest the eBook
 
-From the repository root:
-
 ```powershell
-python -m src.ingestion --pdf-path "D:\Placement\Ebook-Agentic-AI.pdf"
+.\.venv\Scripts\python.exe -m src.ingestion --pdf-path "D:\Placement\Ebook-Agentic-AI.pdf"
 ```
 
-To ingest a different copy:
+For another PDF, replace the path:
 
 ```powershell
-python -m src.ingestion --pdf-path "C:\path\to\Ebook-Agentic-AI.pdf"
+.\.venv\Scripts\python.exe -m src.ingestion --pdf-path "C:\path\to\Ebook-Agentic-AI.pdf"
 ```
 
-Ingestion extracts page-numbered text, splits it into 1,000-character chunks with 200-character overlap, and upserts the chunks and page/source metadata to Pinecone. Re-running ingestion replaces vectors in the configured index namespace, avoiding duplicate chunks.
+Ingestion extracts page text, splits it into overlapping chunks, and stores the chunks and page/source metadata in `data/agentic-ai-vectors.sqlite3`. It builds sparse term vectors locally; it does not call an embedding API. The first run creates the database. Subsequent runs atomically replace the selected local collection. The database is ignored by Git.
 
-## Start the API
+## Run the chatbot API
 
 ```powershell
-uvicorn app:app --reload
+.\.venv\Scripts\python.exe -m uvicorn app:app --reload
 ```
 
-Open `http://127.0.0.1:8000/docs` for interactive API documentation. Health and index readiness are available at `GET /health`; ask a question with `POST /chat`:
-
-```powershell
-Invoke-RestMethod -Method Post `
-  -Uri http://127.0.0.1:8000/chat `
-  -ContentType "application/json" `
-  -Body '{"query":"What is Agentic AI?"}'
-```
-
-Example response:
+Open `http://127.0.0.1:8000/docs`. `GET /health` reports whether local document chunks are ready. Try `POST /chat` with:
 
 ```json
 {
-  "query": "What is Agentic AI?",
-  "final_answer": "The answer is based on the retrieved eBook passages.",
-  "retrieved_context_chunks": ["Relevant eBook passage (page 3)."],
-  "confidence_score": 0.82
+  "query": "What is Agentic AI according to the eBook?"
 }
 ```
 
-The confidence score is the average normalized relevance of the chunks used for the answer, not a guarantee of factual correctness. If no chunk meets the configured relevance threshold, the chatbot refuses without asking the language model to answer. A graph grader also checks generated answers against the retrieved text and retries once before refusing.
+Example response shape:
 
-## Try the sample questions
-
-With the API running, in another terminal:
-
-```powershell
-python tests_sample_queries.py
+```json
+{
+  "query": "What is Agentic AI according to the eBook?",
+  "final_answer": "An exact source sentence selected from the retrieved passage.",
+  "retrieved_context_chunks": [
+    "The source passage text. (Source: Ebook-Agentic-AI.pdf, page 2)"
+  ],
+  "confidence_score": 0.51
+}
 ```
 
-The script exercises the six assignment topics, including the out-of-scope France question, prints each structured response, and checks the response fields and refusal behavior. It requires the configured services and a previously ingested index.
+The answer is extractive: it consists only of sentences copied from the retrieved source chunks. If no chunk meets the relevance threshold, or the graph's exact-source grounding check fails, the chatbot returns `I cannot answer based on the provided document.` with a zero confidence score. `confidence_score` is the mean cosine relevance of retained chunks, not a guarantee of factual correctness.
+
+The provided PDF has some custom-font extraction warnings and flattened table layouts. The app preserves source wording and page metadata rather than silently repairing or inventing text; inspect the returned cited chunks when validating answers that depend on table content.
+
+## Run tests and benchmark questions
+
+Run local unit tests without API calls:
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
+With the API running in another terminal, run the six sample questions:
+
+```powershell
+.\.venv\Scripts\python.exe tests_sample_queries.py
+```
+
+The sample script checks response fields, bounded confidence values, answers to the in-scope prompts, and refusal for the out-of-scope France question.
 
 ## Architecture
 
 ```text
 PDF → PyPDFLoader → RecursiveCharacterTextSplitter
-    → OpenAI text-embedding-3-small → Pinecone (page/source metadata)
+    → local TF-IDF term vectors → SQLite collection
 
-POST /chat → LangGraph retrieve → relevance gate → generate → grounding grader
-                                  ↑                        │
-                                  └──── one retry ─────────┘
-                                      → grounded response or refusal
+POST /chat → LangGraph retrieve → relevance gate → extract source sentences
+                                                → exact-source grounding check
+                                                → response or refusal
 ```
 
-- `src/config.py`: environment loading, defaults, and index validation.
-- `src/ingestion.py`: PDF parsing, page-aware chunking, Pinecone index validation, and vector upsert.
-- `src/graph.py`: typed LangGraph state, similarity-threshold retrieval, grounded answer generation, grading, and bounded retry.
-- `app.py`: FastAPI request/response schema, chat route, health route, and clear service-error reporting.
-- `tests_sample_queries.py`: the six benchmark prompts from the assignment.
+- `src/config.py`: local database and retrieval settings.
+- `src/ingestion.py`: PDF parsing, page-aware chunking, and local persistence.
+- `src/vector_store.py`: SQLite storage and TF-IDF cosine retrieval.
+- `src/graph.py`: LangGraph state, retrieval gate, extractive response, and grounding validation.
+- `app.py`: FastAPI endpoints and response schema.
+- `tests_sample_queries.py`: assignment-style API validation questions.
 
-The API response follows the requested shape: `query`, `final_answer`, `retrieved_context_chunks`, and `confidence_score`. The chunks include page citations so answers can be checked against the source.
+## Default local configuration
 
-## Configuration
+The optional `.env` settings default to:
 
-See `.env.example` for all options. `PINECONE_INDEX_NAME`, `OPENAI_API_KEY`, and `PINECONE_API_KEY` are required when using ingestion or chat. `PINECONE_NAMESPACE` defaults to `agentic-ai-ebook`; the same namespace must be used for ingestion and chat. `RETRIEVAL_TOP_K` defaults to 4 and `RETRIEVAL_SCORE_THRESHOLD` to 0.45. Tune the threshold after evaluating retrieval on the supplied eBook; normalized similarity values depend on the embedding/index behavior.
+- `LOCAL_VECTOR_STORE_PATH=data/agentic-ai-vectors.sqlite3`
+- `LOCAL_VECTOR_STORE_COLLECTION=agentic-ai-ebook`
+- `RETRIEVAL_TOP_K=8`
+- `RETRIEVAL_SCORE_THRESHOLD=0.08`
 
-## Security and publishing
+No OpenAI or Pinecone variables are read by this version.
 
-Keep `.env`, credentials, and the source PDF out of Git. Before publishing, check that no secrets have been added to the repository. Create and configure the Pinecone index and set API keys locally; GitHub does not receive them.
+## Publishing checklist
+
+- Check `git status` and confirm `.env`, PDF files, and `data/*.sqlite3` are not staged.
+- Do not commit keys, even if a key is no longer in use; revoke any key that was shared or exposed.
+- State clearly in the submission that this runnable version uses local TF-IDF retrieval and extractive answers instead of the assessment's hosted Pinecone/OpenAI embedding path.

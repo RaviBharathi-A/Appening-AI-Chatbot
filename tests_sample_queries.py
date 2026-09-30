@@ -14,7 +14,7 @@ SAMPLE_QUERIES = [
     "What real-world industry use cases for Agentic AI are discussed in the eBook?",
     "How does Agentic AI differ from traditional generative AI chatbots according to the eBook?",
     "What key challenges or limitations of Agentic AI are mentioned in the document?",
-    "What i[s the capital of France?",
+    "What is the capital of France?",
 ]
 
 
